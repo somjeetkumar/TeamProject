@@ -128,3 +128,20 @@ class Comment(models.Model):
 
 
 # { "name":"new_project", "description":"its desc", "team":1, "task":{ "title":"this is Title", "description":"this is teak desc", "status":"todo" "priority":"low" "assignee":39 } } { "non_field_errors": [ "Invalid data. Expected a dictionary, but got str." ] }
+# {
+#   "username":"watkinspaul",
+#   "password":"Test@12345"
+# }
+
+# http://127.0.0.1:8000/organizations/4/members/
+
+
+# watkinspaul - 45 task
+
+
+#  {
+#   "project":2,
+#    "assignee":5,
+#    "title":"hii task",
+#    "description":"my task"
+#  }

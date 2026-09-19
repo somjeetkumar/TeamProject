@@ -5,7 +5,7 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated,AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
-
+from django.core.cache import cache
 from .serializers import (
     RegisterSerializer,
     LoginSerializer,
@@ -154,6 +154,7 @@ class OrganizationDetailView(APIView):
         organization = OrganizationService.get_organization(
             request.user, organization_id
         )
+
         return Response(
             OrganizationSerializer(organization).data,
             status=status.HTTP_200_OK
@@ -183,15 +184,49 @@ class OrganizationDetailView(APIView):
 class OrganizationMemberView(APIView):
     permission_classes = [IsAuthenticated]
 
+
+
     def get(self, request, organization_id):
-        members = OrganizationMemberService.get_all_members(
-            request.user, organization_id
+    
+        cache_key = (
+            f"organization_{organization_id}_members"
         )
+    
+        # 1. Check Redis
+        cached_members = cache.get(cache_key)
+    
+        if cached_members is not None:
+            return Response(
+                cached_members,
+                status=status.HTTP_200_OK
+            )
+    
+        # 2. Cache MISS → Database
+        members = OrganizationMemberService.get_all_members(
+            request.user,
+            organization_id
+        )
+    
+        data = OrganizationMemberSerializer(
+            members,
+            many=True
+        ).data
+    
+        # 3. Store in Redis
+        cache.set(
+            cache_key,
+            data,
+            timeout=60
+        )
+    
+        # 4. Return response
         return Response(
-            OrganizationMemberSerializer(members, many=True).data,
+            data,
             status=status.HTTP_200_OK
         )
 
+
+    
     def post(self, request, organization_id):
         serializer = AddOrganizationMemberSerializer(data=request.data)
         if serializer.is_valid():
@@ -351,12 +386,35 @@ class ProjectView(APIView):
 class ProjectDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, project_id):
-        project = ProjectService.get_project(
-            request.user, project_id
+
+
+    def get(self, request):
+    
+        cache_key = f"user_{request.user.id}_projects"
+    
+        cached_projects = cache.get(cache_key)
+    
+        if cached_projects is not None:
+            return Response(
+                cached_projects,
+                status=status.HTTP_200_OK
+            )
+    
+        projects = ProjectService.get_all_projects(request.user)
+    
+        data = ProjectSerializer(
+            projects,
+            many=True
+        ).data
+    
+        cache.set(
+            cache_key,
+            data,
+            timeout=60
         )
+    
         return Response(
-            ProjectSerializer(project).data,
+            data,
             status=status.HTTP_200_OK
         )
 

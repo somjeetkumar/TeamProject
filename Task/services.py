@@ -2,6 +2,16 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
+from django.core.cache import cache
+
+from .models import (
+    Project,
+    Task,
+    OrganizationMembership,
+    TeamMembership,
+)
+from .permissions import check_permission
+
 from .models import (
     Organization,
     OrganizationMembership,
@@ -12,6 +22,7 @@ from .models import (
     Comment
 )
 from .permissions import check_permission
+from .task import notification_email
 
 
 class OrganizationService:
@@ -64,38 +75,220 @@ class OrganizationService:
         return True
 
 
+# class OrganizationMemberService:
+#     @staticmethod
+#     def get_all_members(user, organization_id):
+#         try:
+#             organization = Organization.objects.get(id=organization_id)
+#         except Organization.DoesNotExist:
+#             raise NotFound("Organization not found.")
+#         check_permission(
+#             user, organization, "OrganizationMembership", "view"
+#         )
+#         return OrganizationMembership.objects.filter(
+#             organization=organization
+#         ).select_related("user", "organization")
+
+#     @staticmethod
+#     def add_member(user, organization_id, data):
+#         try:
+#             organization = Organization.objects.get(id=organization_id)
+#         except Organization.DoesNotExist:
+#             raise NotFound("Organization not found.")
+
+#         requester = check_permission(
+#             user, organization, "OrganizationMembership", "create"
+#         )
+#         new_user = data["user"]
+#         role = data.get("role", "member")
+
+#         if role == "owner":
+#             if requester.role != "owner":
+#                 raise PermissionDenied(
+#                     "Only the Owner can assign the Owner role."
+#                 )
+#             raise ValidationError(
+#                 "Use ownership transfer logic to assign Owner."
+#             )
+
+#         if OrganizationMembership.objects.filter(
+#             user=new_user,
+#             organization=organization
+#         ).exists():
+#             raise ValidationError(
+#                 "User is already a member of this organization."
+#             )
+
+#         return OrganizationMembership.objects.create(
+#             user=new_user,
+#             organization=organization,
+#             role=role
+#         )
+
+#     @staticmethod
+#     def update_member_role(user, membership_id, data):
+#         try:
+#             membership = OrganizationMembership.objects.select_related(
+#                 "organization", "user"
+#             ).get(id=membership_id)
+#         except OrganizationMembership.DoesNotExist:
+#             raise NotFound("Organization membership not found.")
+
+#         requester = check_permission(
+#             user,
+#             membership.organization,
+#             "OrganizationMembership",
+#             "update"
+#         )
+#         new_role = data["role"]
+
+#         if membership.role == "owner":
+#             if requester.role != "owner":
+#                 raise PermissionDenied(
+#                     "Admin cannot modify the Owner."
+#                 )
+#             raise ValidationError(
+#                 "Use ownership transfer logic to change Owner."
+#             )
+
+#         if new_role == "owner":
+#             if requester.role != "owner":
+#                 raise PermissionDenied(
+#                     "Only the Owner can assign the Owner role."
+#                 )
+#             raise ValidationError(
+#                 "Use ownership transfer logic to assign Owner."
+#             )
+
+#         membership.role = new_role
+#         membership.save(update_fields=["role"])
+#         return membership
+
+#     @staticmethod
+#     def remove_member(user, membership_id):
+#         try:
+#             membership = OrganizationMembership.objects.select_related(
+#                 "organization", "user"
+#             ).get(id=membership_id)
+#         except OrganizationMembership.DoesNotExist:
+#             raise NotFound("Organization membership not found.")
+
+#         requester = check_permission(
+#             user,
+#             membership.organization,
+#             "OrganizationMembership",
+#             "delete"
+#         )
+
+#         if membership.role == "owner":
+#             if requester.role != "owner":
+#                 raise PermissionDenied(
+#                     "Admin cannot remove the Owner."
+#                 )
+#             raise PermissionDenied(
+#                 "Owner cannot be removed. Transfer ownership first."
+#             )
+
+#         membership.delete()
+#         return True
+
+from django.core.cache import cache
+
+from rest_framework.exceptions import (
+    ValidationError,
+    NotFound,
+    PermissionDenied,
+)
+
+from .models import (
+    Organization,
+    OrganizationMembership,
+)
+
+
 class OrganizationMemberService:
+
+    # =========================================================
+    # CACHE HELPER
+    # =========================================================
+
+    @staticmethod
+    def _member_cache_key(organization_id):
+        return f"organization_{organization_id}_members"
+
+    @staticmethod
+    def _invalidate_member_cache(organization_id):
+        """
+        Delete cached member list for this organization.
+        """
+
+        cache.delete(
+            OrganizationMemberService._member_cache_key(
+                organization_id
+            )
+        )
+
+    # =========================================================
+    # GET ALL MEMBERS
+    # =========================================================
+
     @staticmethod
     def get_all_members(user, organization_id):
+
         try:
-            organization = Organization.objects.get(id=organization_id)
+            organization = Organization.objects.get(
+                id=organization_id
+            )
+
         except Organization.DoesNotExist:
             raise NotFound("Organization not found.")
+
         check_permission(
-            user, organization, "OrganizationMembership", "view"
+            user,
+            organization,
+            "OrganizationMembership",
+            "view"
         )
+
         return OrganizationMembership.objects.filter(
             organization=organization
-        ).select_related("user", "organization")
+        ).select_related(
+            "user",
+            "organization"
+        )
+
+    # =========================================================
+    # ADD MEMBER
+    # =========================================================
 
     @staticmethod
     def add_member(user, organization_id, data):
+
         try:
-            organization = Organization.objects.get(id=organization_id)
+            organization = Organization.objects.get(
+                id=organization_id
+            )
+
         except Organization.DoesNotExist:
             raise NotFound("Organization not found.")
 
         requester = check_permission(
-            user, organization, "OrganizationMembership", "create"
+            user,
+            organization,
+            "OrganizationMembership",
+            "create"
         )
+
         new_user = data["user"]
         role = data.get("role", "member")
 
         if role == "owner":
+
             if requester.role != "owner":
                 raise PermissionDenied(
                     "Only the Owner can assign the Owner role."
                 )
+
             raise ValidationError(
                 "Use ownership transfer logic to assign Owner."
             )
@@ -104,24 +297,41 @@ class OrganizationMemberService:
             user=new_user,
             organization=organization
         ).exists():
+
             raise ValidationError(
                 "User is already a member of this organization."
             )
 
-        return OrganizationMembership.objects.create(
+        membership = OrganizationMembership.objects.create(
             user=new_user,
             organization=organization,
             role=role
         )
 
+        # Member list changed → invalidate cache
+        OrganizationMemberService._invalidate_member_cache(
+            organization_id
+        )
+
+        return membership
+
+    # =========================================================
+    # UPDATE MEMBER ROLE
+    # =========================================================
+
     @staticmethod
     def update_member_role(user, membership_id, data):
+
         try:
             membership = OrganizationMembership.objects.select_related(
-                "organization", "user"
+                "organization",
+                "user"
             ).get(id=membership_id)
+
         except OrganizationMembership.DoesNotExist:
-            raise NotFound("Organization membership not found.")
+            raise NotFound(
+                "Organization membership not found."
+            )
 
         requester = check_permission(
             user,
@@ -129,38 +339,61 @@ class OrganizationMemberService:
             "OrganizationMembership",
             "update"
         )
+
         new_role = data["role"]
 
         if membership.role == "owner":
+
             if requester.role != "owner":
                 raise PermissionDenied(
                     "Admin cannot modify the Owner."
                 )
+
             raise ValidationError(
                 "Use ownership transfer logic to change Owner."
             )
 
         if new_role == "owner":
+
             if requester.role != "owner":
                 raise PermissionDenied(
                     "Only the Owner can assign the Owner role."
                 )
+
             raise ValidationError(
                 "Use ownership transfer logic to assign Owner."
             )
 
         membership.role = new_role
-        membership.save(update_fields=["role"])
+
+        membership.save(
+            update_fields=["role"]
+        )
+
+        # Role changed → invalidate cache
+        OrganizationMemberService._invalidate_member_cache(
+            membership.organization_id
+        )
+
         return membership
+
+    # =========================================================
+    # REMOVE MEMBER
+    # =========================================================
 
     @staticmethod
     def remove_member(user, membership_id):
+
         try:
             membership = OrganizationMembership.objects.select_related(
-                "organization", "user"
+                "organization",
+                "user"
             ).get(id=membership_id)
+
         except OrganizationMembership.DoesNotExist:
-            raise NotFound("Organization membership not found.")
+            raise NotFound(
+                "Organization membership not found."
+            )
 
         requester = check_permission(
             user,
@@ -170,15 +403,25 @@ class OrganizationMemberService:
         )
 
         if membership.role == "owner":
+
             if requester.role != "owner":
                 raise PermissionDenied(
                     "Admin cannot remove the Owner."
                 )
+
             raise PermissionDenied(
                 "Owner cannot be removed. Transfer ownership first."
             )
 
+        organization_id = membership.organization_id
+
         membership.delete()
+
+        # Member removed → invalidate cache
+        OrganizationMemberService._invalidate_member_cache(
+            organization_id
+        )
+
         return True
 
 
@@ -337,9 +580,174 @@ class TeamMemberService:
         return True
 
 
+# class ProjectService:
+#     @staticmethod
+#     def get_all_projects(user):
+#         owner_admin_org_ids = OrganizationMembership.objects.filter(
+#             user=user,
+#             role__in=["owner", "admin"]
+#         ).values_list("organization_id", flat=True)
+
+#         member_team_ids = TeamMembership.objects.filter(
+#             user=user
+#         ).values_list("team_id", flat=True)
+
+#         return Project.objects.filter(
+#             Q(team__organization_id__in=owner_admin_org_ids)
+#             | Q(team_id__in=member_team_ids)
+#         ).distinct()
+
+#     @staticmethod
+#     def create_project(user, data):
+#         team = data.get("team")
+
+#         if not team:
+#             raise ValidationError("Team is required.")
+
+#         check_permission(
+#             user, team.organization, "Project", "create"
+#         )
+#         with transaction.atomic():
+#             project = Project.objects.create(
+#                 name =data["name"],
+#                 description = data["description"],
+#                 team=data["team"],
+#                 )
+
+#             assignee = data["task"]["assignee"]
+
+#             if assignee:
+#                 if not TeamMembership.objects.filter(
+#                     user=assignee,
+#                     team=project.team
+#                 ).exists():
+#                     raise ValidationError(
+#                         "Assignee must be a member of the project's team."
+#                     )
+
+#             Task.objects.create(
+#                 project=project,
+#                 title=data["task"]["title"],
+#                 description=data["task"]["description"],
+#                 status = data["task"]["status"],
+#                 priority=data["task"]["priority"],
+#                 assignee=data["task"]["assignee"],
+#                 created_by=user,
+
+#             )
+#         return project
+
+#     @staticmethod
+#     def get_project(user, project_id):
+#         try:
+#             project = Project.objects.select_related(
+#                 "team", "team__organization"
+#             ).get(id=project_id)
+#         except Project.DoesNotExist:
+#             raise NotFound("Project not found.")
+
+#         membership = check_permission(
+#             user,
+#             project.team.organization,
+#             "Project",
+#             "view"
+#         )
+
+#         if membership.role == "member":
+#             if not TeamMembership.objects.filter(
+#                 user=user, team=project.team
+#             ).exists():
+#                 raise PermissionDenied(
+#                     "You are not a member of this project team."
+#                 )
+
+#         return project
+
+#     @staticmethod
+#     def update_project(user, project_id, data):
+#         try:
+#             project = Project.objects.select_related(
+#                 "team", "team__organization"
+#             ).get(id=project_id)
+#         except Project.DoesNotExist:
+#             raise NotFound("Project not found.")
+
+#         check_permission(
+#             user, project.team.organization, "Project", "update"
+#         )
+
+#         for field, value in data.items():
+#             setattr(project, field, value)
+
+#         project.save()
+#         return project
+
+#     @staticmethod
+#     def delete_project(user, project_id):
+#         try:
+#             project = Project.objects.select_related(
+#                 "team", "team__organization"
+#             ).get(id=project_id)
+#         except Project.DoesNotExist:
+#             raise NotFound("Project not found.")
+
+#         check_permission(
+#             user, project.team.organization, "Project", "delete"
+#         )
+#         project.delete()
+#         return True
+
+
+
+
+
+
 class ProjectService:
+
+    # =========================================================
+    # CACHE HELPERS
+    # =========================================================
+
+    @staticmethod
+    def _project_cache_key(user_id):
+        return f"user_{user_id}_projects"
+
+    @staticmethod
+    def _invalidate_team_project_cache(team):
+        """
+        Invalidate project-list cache for all users who can
+        access projects belonging to this team.
+        """
+
+        user_ids = set()
+
+        # Organization owners and admins
+        org_user_ids = OrganizationMembership.objects.filter(
+            organization=team.organization,
+            role__in=["owner", "admin"]
+        ).values_list("user_id", flat=True)
+
+        # Team members
+        team_user_ids = TeamMembership.objects.filter(
+            team=team
+        ).values_list("user_id", flat=True)
+
+        user_ids.update(org_user_ids)
+        user_ids.update(team_user_ids)
+
+        # Delete cache for every affected user
+        for user_id in user_ids:
+            cache.delete(
+                ProjectService._project_cache_key(user_id)
+            )
+
+    # =========================================================
+    # GET ALL PROJECTS
+    # =========================================================
+
     @staticmethod
     def get_all_projects(user):
+
         owner_admin_org_ids = OrganizationMembership.objects.filter(
             user=user,
             role__in=["owner", "admin"]
@@ -354,30 +762,42 @@ class ProjectService:
             | Q(team_id__in=member_team_ids)
         ).distinct()
 
+    # =========================================================
+    # CREATE PROJECT
+    # =========================================================
+
     @staticmethod
     def create_project(user, data):
+
         team = data.get("team")
 
         if not team:
             raise ValidationError("Team is required.")
 
         check_permission(
-            user, team.organization, "Project", "create"
+            user,
+            team.organization,
+            "Project",
+            "create"
         )
+
         with transaction.atomic():
+
             project = Project.objects.create(
-                name =data["name"],
-                description = data["description"],
-                team=data["team"],
-                )
+                name=data["name"],
+                description=data["description"],
+                team=team,
+            )
 
             assignee = data["task"]["assignee"]
 
             if assignee:
+
                 if not TeamMembership.objects.filter(
                     user=assignee,
                     team=project.team
                 ).exists():
+
                     raise ValidationError(
                         "Assignee must be a member of the project's team."
                     )
@@ -386,21 +806,33 @@ class ProjectService:
                 project=project,
                 title=data["task"]["title"],
                 description=data["task"]["description"],
-                status = data["task"]["status"],
+                status=data["task"]["status"],
                 priority=data["task"]["priority"],
                 assignee=data["task"]["assignee"],
                 created_by=user,
-
             )
+
+        # Invalidate cache for users who can see this team
+        ProjectService._invalidate_team_project_cache(team)
+
         return project
+
+    # =========================================================
+    # GET SINGLE PROJECT
+    # =========================================================
 
     @staticmethod
     def get_project(user, project_id):
+
         try:
+
             project = Project.objects.select_related(
-                "team", "team__organization"
+                "team",
+                "team__organization"
             ).get(id=project_id)
+
         except Project.DoesNotExist:
+
             raise NotFound("Project not found.")
 
         membership = check_permission(
@@ -411,48 +843,104 @@ class ProjectService:
         )
 
         if membership.role == "member":
+
             if not TeamMembership.objects.filter(
-                user=user, team=project.team
+                user=user,
+                team=project.team
             ).exists():
+
                 raise PermissionDenied(
                     "You are not a member of this project team."
                 )
 
         return project
 
+    # =========================================================
+    # UPDATE PROJECT
+    # =========================================================
+
     @staticmethod
     def update_project(user, project_id, data):
+
         try:
+
             project = Project.objects.select_related(
-                "team", "team__organization"
+                "team",
+                "team__organization"
             ).get(id=project_id)
+
         except Project.DoesNotExist:
+
             raise NotFound("Project not found.")
 
         check_permission(
-            user, project.team.organization, "Project", "update"
+            user,
+            project.team.organization,
+            "Project",
+            "update"
         )
 
+        # Keep old team before update
+        old_team = project.team
+
+        # Update fields
         for field, value in data.items():
             setattr(project, field, value)
 
         project.save()
+
+        # New team after update
+        new_team = project.team
+
+        # Invalidate old team's users
+        ProjectService._invalidate_team_project_cache(old_team)
+
+        # If project moved to another team,
+        # invalidate new team's users too.
+        if old_team.id != new_team.id:
+
+            ProjectService._invalidate_team_project_cache(
+                new_team
+            )
+
         return project
+
+    # =========================================================
+    # DELETE PROJECT
+    # =========================================================
 
     @staticmethod
     def delete_project(user, project_id):
+
         try:
+
             project = Project.objects.select_related(
-                "team", "team__organization"
+                "team",
+                "team__organization"
             ).get(id=project_id)
+
         except Project.DoesNotExist:
+
             raise NotFound("Project not found.")
 
         check_permission(
-            user, project.team.organization, "Project", "delete"
+            user,
+            project.team.organization,
+            "Project",
+            "delete"
         )
+
+        # Save team before deleting project
+        team = project.team
+
         project.delete()
+
+        # Invalidate cache for users who could see this project
+        ProjectService._invalidate_team_project_cache(team)
+
         return True
+
+
 
 
 class TaskService:
@@ -542,11 +1030,22 @@ class TaskService:
                 raise ValidationError(
                     "Assignee must be a member of the project's team."
                 )
-
-        return Task.objects.create(
+            # notification_email.delay(assignee.email,"Task assigned",)
+            task = Task.objects.create(
             created_by=user,
             **data
-        )
+             )
+            if assignee:
+                # print("run")
+                notification_email.delay(
+                    assignee.email,
+                    "Task assigned",
+                    task.title
+                )
+                print("rerun")
+
+
+        return task
 
     @staticmethod
     def update_task(user, task_id, data):
@@ -596,6 +1095,13 @@ class TaskService:
                 raise ValidationError(
                     "Assignee must be a member of the project's team."
                 )
+            
+        if new_assignee != task.assignee:
+            notification_email.delay(
+                new_assignee.email,
+                "Task assigned",
+                task.title
+            )
 
         for field, value in data.items():
             setattr(task, field, value)
@@ -710,12 +1216,23 @@ class CommentService:
                 raise PermissionDenied(
                     "You are not a member of this task's team."
                 )
+        comment = Comment.objects.create(
+                    task=task,
+                    author=user,
+                    content=data["content"]
+                )
 
-        return Comment.objects.create(
-            task=task,
-            author=user,
-            content=data["content"]
-        )
+
+
+
+        if task.assignee:
+            notification_email.delay(
+                task.assignee.email,
+                "Comment added",
+                comment.content
+            )
+
+        return comment
 
 
     @staticmethod
